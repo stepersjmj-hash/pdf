@@ -16,6 +16,8 @@
       <button id="btn-open" class="btn">📂 열기</button>
       <button id="btn-append" class="btn" disabled>➕ PDF 병합</button>
       <button id="btn-extract" class="btn" disabled>✂️ 선택 페이지 추출</button>
+      <button id="btn-search" class="btn" disabled title="문서에서 텍스트 찾기 (Ctrl+F)">🔍 찾기</button>
+      <button id="btn-print" class="btn" disabled title="인쇄 (Ctrl+P)">🖨️ 인쇄</button>
       <button id="btn-save" class="btn btn-primary" disabled>💾 저장 (다운로드)</button>
     </div>
   </header>
@@ -68,6 +70,13 @@
     </aside>
 
     <section id="viewer-area" class="viewer-area">
+      <div id="search-bar" class="search-bar hidden">
+        <input id="search-input" type="text" placeholder="문서에서 찾기..." autocomplete="off" />
+        <span id="search-count" class="search-count">0/0</span>
+        <button id="search-prev" class="search-btn" title="이전 결과 (Shift+Enter)">▲</button>
+        <button id="search-next" class="search-btn" title="다음 결과 (Enter)">▼</button>
+        <button id="search-close" class="search-btn" title="닫기 (Esc)">✕</button>
+      </div>
       <div id="dropzone" class="dropzone">
         <div class="dropzone-inner">
           <div class="dz-icon">📄</div>
@@ -80,6 +89,7 @@
       <div id="viewer" class="viewer hidden">
         <div id="page-wrap" class="page-wrap">
           <canvas id="page-canvas"></canvas>
+          <div id="search-layer" class="search-layer"></div>
           <div id="overlay" class="overlay"></div>
         </div>
       </div>

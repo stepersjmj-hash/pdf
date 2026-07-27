@@ -31,6 +31,8 @@ const els = {
   zoomLabel: $('zoom-label'), pageLabel: $('page-label'),
   toast: $('toast'), checkAll: $('check-all'),
   annoColor: $('anno-color'), annoSize: $('anno-size'),
+  searchBar: $('search-bar'), searchInput: $('search-input'),
+  searchCount: $('search-count'), searchLayer: $('search-layer'),
 };
 
 /* ────────────────────────────────────────────
@@ -94,7 +96,7 @@ async function openFile(file) {
     els.viewer.classList.remove('hidden');
     els.sidebar.classList.remove('hidden');
     els.toolbar.classList.remove('hidden');
-    ['btn-append', 'btn-extract', 'btn-save'].forEach((id) => { $(id).disabled = false; });
+    ['btn-append', 'btn-extract', 'btn-save', 'btn-search', 'btn-print'].forEach((id) => { $(id).disabled = false; });
     await fitWidth();
     await rebuildThumbs();
     await renderCurrent();
@@ -158,6 +160,7 @@ async function renderCurrent() {
   if (seq !== renderSeq) return;
 
   renderOverlay();
+  renderSearchHits();
   updatePageLabel();
   els.zoomLabel.textContent = Math.round(state.zoom * 100) + '%';
 }
@@ -536,6 +539,165 @@ document.addEventListener('keydown', (e) => {
 });
 
 /* ────────────────────────────────────────────
+   텍스트 검색
+   ──────────────────────────────────────────── */
+const searchState = { query: '', results: [], cur: -1 };
+// result: { entry, itemIdx, start, len }
+
+async function getPageTextItems(entry) {
+  const src = state.srcDocs[entry.src];
+  if (!src.textCache) src.textCache = new Map();
+  if (!src.textCache.has(entry.idx)) {
+    const page = await src.pdfjsDoc.getPage(entry.idx + 1);
+    const tc = await page.getTextContent();
+    src.textCache.set(entry.idx, tc.items);
+  }
+  return src.textCache.get(entry.idx);
+}
+
+async function runSearch(query) {
+  searchState.query = query;
+  searchState.results = [];
+  searchState.cur = -1;
+  const q = query.trim().toLowerCase();
+  if (!q) { updateSearchUi(); renderSearchHits(); return; }
+  for (const entry of state.pages) {
+    const items = await getPageTextItems(entry);
+    items.forEach((item, itemIdx) => {
+      const s = (item.str || '').toLowerCase();
+      if (!s) return;
+      let pos = 0;
+      for (;;) {
+        const found = s.indexOf(q, pos);
+        if (found < 0) break;
+        searchState.results.push({ entry, itemIdx, start: found, len: q.length });
+        pos = found + q.length;
+      }
+    });
+  }
+  if (searchState.results.length) await goToResult(0);
+  else { updateSearchUi(); renderSearchHits(); }
+}
+
+async function goToResult(k) {
+  const n = searchState.results.length;
+  if (!n) return;
+  searchState.cur = ((k % n) + n) % n;
+  const r = searchState.results[searchState.cur];
+  const pi = state.pages.indexOf(r.entry);
+  if (pi < 0) { await runSearch(searchState.query); return; } // 페이지가 삭제된 경우 재검색
+  if (pi !== state.current) await goToPage(pi);
+  else await renderSearchHits();
+  updateSearchUi();
+  const curEl = els.searchLayer.querySelector('.search-hit.current');
+  if (curEl) curEl.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
+}
+
+function updateSearchUi() {
+  const n = searchState.results.length;
+  els.searchCount.textContent = n ? `${searchState.cur + 1}/${n}` : '0/0';
+}
+
+async function renderSearchHits() {
+  const layer = els.searchLayer;
+  layer.innerHTML = '';
+  const entry = state.pages[state.current];
+  if (!entry || !searchState.results.length) return;
+  const pageResults = searchState.results
+    .map((r, ri) => ({ r, ri }))
+    .filter(({ r }) => r.entry === entry);
+  if (!pageResults.length) return;
+
+  const page = await state.srcDocs[entry.src].pdfjsDoc.getPage(entry.idx + 1);
+  const rotation = mod360(page.rotate + entry.rot);
+  const vp = page.getViewport({ scale: state.zoom, rotation });
+  const items = await getPageTextItems(entry);
+
+  for (const { r, ri } of pageResults) {
+    const item = items[r.itemIdx];
+    if (!item || !item.str) continue;
+    // 텍스트 조각의 뷰포트 기준 위치/크기 (pdf.js 텍스트 레이어와 같은 방식)
+    const tx = pdfjsLib.Util.transform(vp.transform, item.transform);
+    const angle = Math.atan2(tx[1], tx[0]);
+    const fontH = Math.hypot(tx[2], tx[3]);
+    const totalW = item.width * state.zoom;
+    // 조각 내 일부 일치는 글자 수 비율로 근사
+    const startX = (r.start / item.str.length) * totalW;
+    const hitW = Math.max(2, (r.len / item.str.length) * totalW);
+
+    const div = document.createElement('div');
+    div.className = 'search-hit' + (ri === searchState.cur ? ' current' : '');
+    div.style.left = tx[4] + 'px';
+    div.style.top = (tx[5] - fontH) + 'px';
+    div.style.width = hitW + 'px';
+    div.style.height = fontH * 1.2 + 'px';
+    div.style.transformOrigin = '0 100%';
+    div.style.transform = `rotate(${angle}rad) translateX(${startX}px)`;
+    layer.appendChild(div);
+  }
+}
+
+function openSearch() {
+  if (!state.pages.length) return;
+  els.searchBar.classList.remove('hidden');
+  els.searchInput.focus();
+  els.searchInput.select();
+}
+
+function closeSearch() {
+  els.searchBar.classList.add('hidden');
+  searchState.query = '';
+  searchState.results = [];
+  searchState.cur = -1;
+  els.searchLayer.innerHTML = '';
+  updateSearchUi();
+}
+
+/* ────────────────────────────────────────────
+   인쇄
+   ──────────────────────────────────────────── */
+let printing = false;
+
+async function printPdf() {
+  if (!state.pages.length || printing) return;
+  printing = true;
+  try {
+    toast('인쇄 준비 중... (편집 내용 반영)');
+    const bytes = await buildPdf(state.pages);
+    const doc = await pdfjsLib.getDocument({ data: bytes }).promise;
+
+    const old = document.getElementById('print-root');
+    if (old) old.remove();
+    const root = document.createElement('div');
+    root.id = 'print-root';
+
+    for (let i = 1; i <= doc.numPages; i++) {
+      const page = await doc.getPage(i);
+      const vp = page.getViewport({ scale: 2 }); // 약 150dpi
+      const c = document.createElement('canvas');
+      c.width = Math.floor(vp.width);
+      c.height = Math.floor(vp.height);
+      await page.render({ canvasContext: c.getContext('2d'), viewport: vp, intent: 'print' }).promise;
+      const div = document.createElement('div');
+      div.className = 'print-page';
+      const img = new Image();
+      img.src = c.toDataURL('image/png');
+      div.appendChild(img);
+      root.appendChild(div);
+    }
+    document.body.appendChild(root);
+    await Promise.all([...root.querySelectorAll('img')].map((im) => im.decode().catch(() => {})));
+    window.print();
+    root.remove();
+  } catch (e) {
+    console.error(e);
+    toast('인쇄 준비 중 오류가 발생했습니다.');
+  } finally {
+    printing = false;
+  }
+}
+
+/* ────────────────────────────────────────────
    저장 / 추출 (pdf-lib)
    ──────────────────────────────────────────── */
 let koreanFontBytes = null;
@@ -719,6 +881,44 @@ $('btn-zoom-out').addEventListener('click', async () => {
   await renderCurrent();
 });
 
+// 검색
+$('btn-search').addEventListener('click', openSearch);
+$('search-close').addEventListener('click', closeSearch);
+$('search-prev').addEventListener('click', () => goToResult(searchState.cur - 1));
+$('search-next').addEventListener('click', () => goToResult(searchState.cur + 1));
+
+let searchDebounce;
+els.searchInput.addEventListener('input', () => {
+  clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(() => runSearch(els.searchInput.value), 250);
+});
+els.searchInput.addEventListener('keydown', (e) => {
+  e.stopPropagation();
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    goToResult(searchState.cur + (e.shiftKey ? -1 : 1));
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    closeSearch();
+  }
+});
+
+// 인쇄
+$('btn-print').addEventListener('click', printPdf);
+
+// 단축키: Ctrl+F(찾기), Ctrl+P(인쇄)
+document.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.metaKey)) return;
+  const key = e.key.toLowerCase();
+  if (key === 'f' && state.pages.length) {
+    e.preventDefault();
+    openSearch();
+  } else if (key === 'p' && state.pages.length) {
+    e.preventDefault();
+    printPdf();
+  }
+});
+
 // 전체 선택
 els.checkAll.addEventListener('change', () => {
   state.pages.forEach((p) => { p.checked = els.checkAll.checked; });
@@ -726,4 +926,4 @@ els.checkAll.addEventListener('change', () => {
 });
 
 // 개발자 콘솔용 훅
-window.__pdfApp = { state, buildPdf, rotatePage, deletePage, renderCurrent, renderOverlay, pdfjsLib };
+window.__pdfApp = { state, buildPdf, rotatePage, deletePage, renderCurrent, renderOverlay, pdfjsLib, searchState, runSearch, goToResult, printPdf };

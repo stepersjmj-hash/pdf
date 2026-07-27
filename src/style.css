@@ -149,7 +149,50 @@ body {
 .thumb-actions button:hover { background: #f3f4f6; color: var(--text); }
 
 /* ── 뷰어 ─────────────────────────── */
-.viewer-area { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.viewer-area { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
+
+/* ── 검색 바 ─────────────────────────── */
+.search-bar {
+  position: absolute;
+  top: 10px;
+  right: 28px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+}
+.search-bar input {
+  border: none;
+  outline: none;
+  font-size: 14px;
+  width: 180px;
+  background: transparent;
+}
+.search-count { font-size: 12px; color: var(--muted); min-width: 40px; text-align: center; }
+.search-btn {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  color: var(--muted);
+}
+.search-btn:hover { background: #f3f4f6; color: var(--text); }
+
+.search-layer { position: absolute; inset: 0; pointer-events: none; }
+.search-hit {
+  position: absolute;
+  background: rgba(255, 213, 0, 0.45);
+  border-radius: 2px;
+  pointer-events: none;
+}
+.search-hit.current { background: rgba(255, 115, 0, 0.55); outline: 1px solid rgba(220, 90, 0, 0.9); }
 
 .dropzone {
   flex: 1;
@@ -221,6 +264,18 @@ body {
   padding: 0;
 }
 .anno.selected .anno-del { display: block; }
+
+/* ── 인쇄 ─────────────────────────── */
+#print-root { display: none; }
+
+@media print {
+  html, body { height: auto !important; overflow: visible !important; }
+  body > *:not(#print-root) { display: none !important; }
+  #print-root { display: block !important; }
+  .print-page { break-after: page; }
+  .print-page:last-child { break-after: auto; }
+  .print-page img { width: 100%; display: block; }
+}
 
 /* ── 토스트 ─────────────────────────── */
 .toast {
