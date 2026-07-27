@@ -541,7 +541,7 @@ document.addEventListener('keydown', (e) => {
 let koreanFontBytes = null;
 async function loadKoreanFont() {
   if (!koreanFontBytes) {
-    const res = await fetch('/fonts/NotoSansKR-Regular.otf');
+    const res = await fetch(import.meta.env.BASE_URL + 'fonts/NotoSansKR-Regular.otf');
     if (!res.ok) throw new Error('font load failed');
     koreanFontBytes = await res.arrayBuffer();
   }
