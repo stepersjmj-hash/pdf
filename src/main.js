@@ -880,6 +880,14 @@ $('btn-zoom-out').addEventListener('click', async () => {
   state.zoom = Math.max(0.2, state.zoom / 1.2);
   await renderCurrent();
 });
+$('btn-zoom-100').addEventListener('click', async () => {
+  state.zoom = 1;
+  await renderCurrent();
+});
+$('btn-zoom-fit').addEventListener('click', async () => {
+  await fitWidth();
+  await renderCurrent();
+});
 
 // 검색
 $('btn-search').addEventListener('click', openSearch);
