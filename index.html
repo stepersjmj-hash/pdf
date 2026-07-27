@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PDF 편집기 — 브라우저에서 바로 편집</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-icon">📄</span>
+      <span class="brand-name">PDF 편집기</span>
+    </div>
+    <div class="topbar-actions">
+      <button id="btn-open" class="btn">📂 열기</button>
+      <button id="btn-append" class="btn" disabled>➕ PDF 병합</button>
+      <button id="btn-extract" class="btn" disabled>✂️ 선택 페이지 추출</button>
+      <button id="btn-save" class="btn btn-primary" disabled>💾 저장 (다운로드)</button>
+    </div>
+  </header>
+
+  <div id="toolbar" class="toolbar hidden">
+    <div class="tool-group" role="group" aria-label="도구">
+      <button class="tool-btn active" data-tool="select" title="선택 / 이동">🖱️ 선택</button>
+      <button class="tool-btn" data-tool="text" title="클릭한 위치에 텍스트 추가">🅣 텍스트</button>
+      <button class="tool-btn" data-tool="highlight" title="드래그하여 형광펜">🖍️ 형광펜</button>
+      <button class="tool-btn" data-tool="rect" title="드래그하여 사각형">▭ 사각형</button>
+    </div>
+    <div class="tool-group">
+      <label class="tool-label">색상 <input type="color" id="anno-color" value="#e8412a" /></label>
+      <label class="tool-label">크기
+        <select id="anno-size">
+          <option value="10">10</option>
+          <option value="12">12</option>
+          <option value="14" selected>14</option>
+          <option value="18">18</option>
+          <option value="24">24</option>
+          <option value="36">36</option>
+          <option value="48">48</option>
+        </select>
+      </label>
+    </div>
+    <div class="tool-group">
+      <button id="btn-rotate-left" class="tool-btn" title="현재 페이지 왼쪽으로 회전">↺ 회전</button>
+      <button id="btn-rotate-right" class="tool-btn" title="현재 페이지 오른쪽으로 회전">↻ 회전</button>
+      <button id="btn-delete-page" class="tool-btn danger" title="현재 페이지 삭제">🗑️ 페이지 삭제</button>
+    </div>
+    <div class="tool-group">
+      <button id="btn-zoom-out" class="tool-btn" title="축소">−</button>
+      <span id="zoom-label" class="zoom-label">100%</span>
+      <button id="btn-zoom-in" class="tool-btn" title="확대">＋</button>
+    </div>
+    <div class="tool-group page-nav">
+      <button id="btn-prev" class="tool-btn" title="이전 페이지">◀</button>
+      <span id="page-label" class="zoom-label">- / -</span>
+      <button id="btn-next" class="tool-btn" title="다음 페이지">▶</button>
+    </div>
+  </div>
+
+  <main class="layout">
+    <aside id="sidebar" class="sidebar hidden">
+      <div class="sidebar-head">
+        <label class="check-all"><input type="checkbox" id="check-all" /> 전체 선택</label>
+        <span class="hint">드래그로 순서 변경</span>
+      </div>
+      <div id="thumbs" class="thumbs"></div>
+    </aside>
+
+    <section id="viewer-area" class="viewer-area">
+      <div id="dropzone" class="dropzone">
+        <div class="dropzone-inner">
+          <div class="dz-icon">📄</div>
+          <h1>PDF 파일을 여기에 끌어다 놓으세요</h1>
+          <p>또는</p>
+          <button id="btn-open-2" class="btn btn-primary btn-lg">파일 선택</button>
+          <p class="dz-note">파일은 서버로 전송되지 않고 브라우저 안에서만 처리됩니다 🔒</p>
+        </div>
+      </div>
+      <div id="viewer" class="viewer hidden">
+        <div id="page-wrap" class="page-wrap">
+          <canvas id="page-canvas"></canvas>
+          <div id="overlay" class="overlay"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <input type="file" id="file-input" accept="application/pdf,.pdf" hidden />
+  <input type="file" id="append-input" accept="application/pdf,.pdf" hidden />
+  <div id="toast" class="toast hidden"></div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
