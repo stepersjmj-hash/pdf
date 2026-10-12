@@ -1,6 +1,8 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { PDFDocument, rgb, degrees } from 'pdf-lib';
+// cantoo 포크는 암호화/복호화 전용 필터로만 사용 (폰트 서브셋 버그가 있어 문서 조립에는 원본 pdf-lib 사용)
+import { PDFDocument as CryptoPDFDocument } from '@cantoo/pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc;
@@ -56,8 +58,28 @@ function mod360(d) { return ((d % 360) + 360) % 360; }
 async function getLibDoc(src) {
   if (src.libFailed) return null;
   if (!src.libDoc) {
+    // 1) 일반 PDF: 원본 pdf-lib로 바로 로드
+    if (src.password === undefined) {
+      try {
+        src.libDoc = await PDFDocument.load(src.bytes);
+        src.libDecrypted = true;
+        return src.libDoc;
+      } catch { /* 암호화된 문서일 수 있음 → 아래에서 복호화 시도 */ }
+    }
+    // 2) 암호화 PDF: cantoo 포크로 복호화 → 평문 bytes → 원본 pdf-lib로 로드
+    for (const pw of src.password !== undefined ? [src.password] : ['']) {
+      try {
+        const dec = await CryptoPDFDocument.load(src.bytes, { password: pw });
+        const plainBytes = await dec.save();
+        src.libDoc = await PDFDocument.load(plainBytes);
+        src.libDecrypted = true;
+        return src.libDoc;
+      } catch { /* 다음 방법 시도 */ }
+    }
     try {
+      // 3) 복호화 실패 → 구조만 읽기 (저장 시 이미지 변환 폴백)
       src.libDoc = await PDFDocument.load(src.bytes, { ignoreEncryption: true });
+      src.libDecrypted = false;
     } catch (e) {
       console.error('pdf-lib load 실패:', e);
       src.libFailed = true;
@@ -127,7 +149,7 @@ async function openFile(file) {
     els.viewer.classList.remove('hidden');
     els.sidebar.classList.remove('hidden');
     els.toolbar.classList.remove('hidden');
-    ['btn-append', 'btn-extract', 'btn-save', 'btn-search', 'btn-print'].forEach((id) => { $(id).disabled = false; });
+    ['btn-append', 'btn-extract', 'btn-save', 'btn-save-enc', 'btn-search', 'btn-print'].forEach((id) => { $(id).disabled = false; });
     await fitWidth();
     await rebuildThumbs();
     await renderCurrent();
@@ -755,7 +777,7 @@ async function rasterizePage(src, idx) {
   return { dataUrl: c.toDataURL('image/png'), w: vp1.width, h: vp1.height };
 }
 
-async function buildPdf(entries) {
+async function buildPdf(entries, encryptPassword) {
   const out = await PDFDocument.create();
   out.registerFontkit(fontkit);
 
@@ -771,8 +793,9 @@ async function buildPdf(entries) {
   const copied = new Map(); // "src:idx" → PDFPage (복사본)
   const canCopy = new Map(); // srcIndex → boolean
   for (const src of new Set(entries.map((en) => en.src))) {
-    const libDoc = await getLibDoc(state.srcDocs[src]);
-    const ok = !!libDoc && !libDoc.isEncrypted;
+    const srcObj = state.srcDocs[src];
+    const libDoc = await getLibDoc(srcObj);
+    const ok = !!libDoc && srcObj.libDecrypted === true;
     canCopy.set(src, ok);
     if (!ok) continue;
     const idxs = [...new Set(entries.filter((en) => en.src === src).map((en) => en.idx))];
@@ -836,7 +859,20 @@ async function buildPdf(entries) {
     }
   }
 
-  return out.save();
+  const bytes = await out.save();
+  if (!encryptPassword) return bytes;
+
+  // 완성된 문서를 cantoo 포크로 다시 읽어 AES-256 암호화만 적용
+  const enc = await CryptoPDFDocument.load(bytes);
+  enc.encrypt({
+    userPassword: encryptPassword,
+    ownerPassword: encryptPassword,
+    permissions: {
+      printing: 'highResolution', modifying: true, copying: true,
+      annotating: true, fillingForms: true, contentAccessibility: true, documentAssembly: true,
+    },
+  });
+  return enc.save();
 }
 
 function download(bytes, name) {
@@ -864,6 +900,25 @@ async function saveAll() {
   }
 }
 
+async function saveEncrypted() {
+  if (!state.pages.length) return;
+  const pw = window.prompt('PDF에 설정할 암호를 입력하세요:');
+  if (pw === null) return;
+  if (!pw) { toast('암호가 비어 있어 취소했습니다.'); return; }
+  const pw2 = window.prompt('확인을 위해 암호를 한 번 더 입력하세요:');
+  if (pw2 === null) return;
+  if (pw !== pw2) { toast('암호가 서로 달라 취소했습니다. 다시 시도하세요.'); return; }
+  try {
+    toast('암호 PDF 생성 중...');
+    const bytes = await buildPdf(state.pages, pw);
+    download(bytes, state.fileName + '_암호.pdf');
+    toast('저장 완료 — 설정한 암호로 보호되었습니다 (AES-256).');
+  } catch (e) {
+    console.error(e);
+    toast('암호 저장 중 오류가 발생했습니다.');
+  }
+}
+
 async function extractChecked() {
   const selected = state.pages.filter((p) => p.checked);
   if (!selected.length) { toast('왼쪽 섬네일에서 추출할 페이지를 먼저 체크하세요.'); return; }
@@ -887,6 +942,7 @@ $('btn-open').addEventListener('click', () => els.fileInput.click());
 $('btn-open-2').addEventListener('click', () => els.fileInput.click());
 $('btn-append').addEventListener('click', () => els.appendInput.click());
 $('btn-save').addEventListener('click', saveAll);
+$('btn-save-enc').addEventListener('click', saveEncrypted);
 $('btn-extract').addEventListener('click', extractChecked);
 
 els.fileInput.addEventListener('change', () => {
