@@ -54,7 +54,16 @@ function hexToRgb(hex) {
 function mod360(d) { return ((d % 360) + 360) % 360; }
 
 async function getLibDoc(src) {
-  if (!src.libDoc) src.libDoc = await PDFDocument.load(src.bytes, { ignoreEncryption: true });
+  if (src.libFailed) return null;
+  if (!src.libDoc) {
+    try {
+      src.libDoc = await PDFDocument.load(src.bytes, { ignoreEncryption: true });
+    } catch (e) {
+      console.error('pdf-lib load 실패:', e);
+      src.libFailed = true;
+      return null;
+    }
+  }
   return src.libDoc;
 }
 
@@ -79,9 +88,31 @@ function displayToPdf(dx, dy, W, H, R) {
 async function loadSource(file) {
   const buf = await file.arrayBuffer();
   const bytes = new Uint8Array(buf).slice();
-  const pdfjsDoc = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
-  state.srcDocs.push({ pdfjsDoc, bytes, libDoc: null });
-  return { srcIndex: state.srcDocs.length - 1, numPages: pdfjsDoc.numPages };
+  let password;
+  for (;;) {
+    try {
+      const pdfjsDoc = await pdfjsLib.getDocument({ data: bytes.slice(), password }).promise;
+      state.srcDocs.push({ pdfjsDoc, bytes, libDoc: null, password });
+      return { srcIndex: state.srcDocs.length - 1, numPages: pdfjsDoc.numPages };
+    } catch (e) {
+      if (e && e.name === 'PasswordException') {
+        const msg = password === undefined
+          ? `"${file.name}" 은(는) 암호로 보호되어 있습니다.\n암호를 입력하세요:`
+          : '암호가 올바르지 않습니다. 다시 입력하세요:';
+        const input = window.prompt(msg);
+        if (input === null || input === '') throw new Error('PASSWORD_CANCELLED');
+        password = input;
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
+function openErrorMessage(e) {
+  if (e && e.message === 'PASSWORD_CANCELLED') return '암호 입력이 취소되어 파일을 열지 않았습니다.';
+  if (e && e.name === 'InvalidPDFException') return 'PDF 형식이 아니거나 파일이 손상되었습니다.';
+  return 'PDF를 열 수 없습니다: ' + (e && e.message ? e.message : '알 수 없는 오류');
 }
 
 async function openFile(file) {
@@ -103,7 +134,7 @@ async function openFile(file) {
     toast(`"${file.name}" 열림 (${numPages}쪽)`);
   } catch (e) {
     console.error(e);
-    toast('PDF를 열 수 없습니다. 파일이 손상되었거나 암호로 보호되어 있을 수 있습니다.');
+    toast(openErrorMessage(e));
   }
 }
 
@@ -118,7 +149,7 @@ async function appendFile(file) {
     toast(`"${file.name}" ${numPages}쪽이 뒤에 추가되었습니다`);
   } catch (e) {
     console.error(e);
-    toast('PDF를 추가할 수 없습니다.');
+    toast(openErrorMessage(e));
   }
 }
 
@@ -710,6 +741,20 @@ async function loadKoreanFont() {
   return koreanFontBytes;
 }
 
+let lastBuildRasterized = false;
+
+// pdf-lib가 열 수 없는(암호 보호 등) 원본 페이지를 pdf.js로 렌더링해 PNG로 변환
+async function rasterizePage(src, idx) {
+  const page = await src.pdfjsDoc.getPage(idx + 1);
+  const vp1 = page.getViewport({ scale: 1 }); // 기본 회전 포함 표시 크기
+  const vp = page.getViewport({ scale: 2 });  // 약 150dpi
+  const c = document.createElement('canvas');
+  c.width = Math.floor(vp.width);
+  c.height = Math.floor(vp.height);
+  await page.render({ canvasContext: c.getContext('2d'), viewport: vp, intent: 'print' }).promise;
+  return { dataUrl: c.toDataURL('image/png'), w: vp1.width, h: vp1.height };
+}
+
 async function buildPdf(entries) {
   const out = await PDFDocument.create();
   out.registerFontkit(fontkit);
@@ -721,22 +766,38 @@ async function buildPdf(entries) {
   }
 
   // 원본 문서별로 필요한 페이지를 한 번에 복사
+  // (암호 보호 등으로 pdf-lib가 다루지 못하는 원본은 제외 → 아래에서 이미지로 변환)
+  lastBuildRasterized = false;
   const copied = new Map(); // "src:idx" → PDFPage (복사본)
+  const canCopy = new Map(); // srcIndex → boolean
   for (const src of new Set(entries.map((en) => en.src))) {
     const libDoc = await getLibDoc(state.srcDocs[src]);
+    const ok = !!libDoc && !libDoc.isEncrypted;
+    canCopy.set(src, ok);
+    if (!ok) continue;
     const idxs = [...new Set(entries.filter((en) => en.src === src).map((en) => en.idx))];
     const pages = await out.copyPages(libDoc, idxs);
     idxs.forEach((idx, k) => copied.set(src + ':' + idx, pages[k]));
   }
 
   for (const en of entries) {
-    let page = copied.get(en.src + ':' + en.idx);
-    // 같은 페이지가 두 번 들어간 경우를 대비해 필요하면 다시 복사
-    if (out.getPages().includes(page)) {
-      const libDoc = await getLibDoc(state.srcDocs[en.src]);
-      [page] = await out.copyPages(libDoc, [en.idx]);
+    let page;
+    if (canCopy.get(en.src)) {
+      page = copied.get(en.src + ':' + en.idx);
+      // 같은 페이지가 두 번 들어간 경우를 대비해 필요하면 다시 복사
+      if (out.getPages().includes(page)) {
+        const libDoc = await getLibDoc(state.srcDocs[en.src]);
+        [page] = await out.copyPages(libDoc, [en.idx]);
+      }
+      out.addPage(page);
+    } else {
+      // 폴백: 페이지를 고해상도 이미지로 렌더링해 새 페이지에 삽입
+      lastBuildRasterized = true;
+      const r = await rasterizePage(state.srcDocs[en.src], en.idx);
+      const png = await out.embedPng(r.dataUrl);
+      page = out.addPage([r.w, r.h]);
+      page.drawImage(png, { x: 0, y: 0, width: r.w, height: r.h });
     }
-    out.addPage(page);
 
     const base = mod360(page.getRotation().angle);
     const R = mod360(base + en.rot);
@@ -794,7 +855,9 @@ async function saveAll() {
     toast('PDF 생성 중...');
     const bytes = await buildPdf(state.pages);
     download(bytes, state.fileName + '_편집.pdf');
-    toast('저장 완료! 다운로드를 확인하세요.');
+    toast(lastBuildRasterized
+      ? '저장 완료 — 암호 보호된 원본 페이지는 이미지로 변환되었습니다.'
+      : '저장 완료! 다운로드를 확인하세요.');
   } catch (e) {
     console.error(e);
     toast('저장 중 오류가 발생했습니다.');
@@ -808,7 +871,9 @@ async function extractChecked() {
     toast('PDF 생성 중...');
     const bytes = await buildPdf(selected);
     download(bytes, state.fileName + `_${selected.length}쪽 추출.pdf`);
-    toast(`${selected.length}쪽 추출 완료!`);
+    toast(lastBuildRasterized
+      ? `${selected.length}쪽 추출 완료 — 암호 보호된 원본 페이지는 이미지로 변환되었습니다.`
+      : `${selected.length}쪽 추출 완료!`);
   } catch (e) {
     console.error(e);
     toast('추출 중 오류가 발생했습니다.');
